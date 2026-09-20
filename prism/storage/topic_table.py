@@ -14,6 +14,11 @@ class TopicTable:
     def open_topic(self) -> Topic | None:
         return self._topics[self._open_id] if self._open_id is not None else None
 
+    @property
+    def open_topic_id(self) -> int | None:
+        """ID of the current open topic, or None."""
+        return self._open_id
+
     def new_topic(self, placeholder: str) -> Topic:
         if self._open_id is not None:
             raise RuntimeError("close the open topic before starting a new one")
