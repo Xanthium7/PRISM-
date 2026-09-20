@@ -60,6 +60,12 @@ class ContextManager:
         """ID of the current open topic, or None."""
         return self.topics.open_topic_id
 
+    @property
+    def last_scores(self) -> dict[int, float]:
+        """Router scores from the most recent prepare_context call (topic_id -> probability).
+        Returns a copy so callers cannot accidentally mutate internal state."""
+        return dict(self._last_scores)
+
     # ================================================================ public API
 
     def prepare_context(self, user_text: str) -> list[Message]:

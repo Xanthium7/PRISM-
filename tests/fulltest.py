@@ -625,17 +625,23 @@ class TestSegmentation(PrismCase):
         self.eq(a.mgr.open_topic_id, 1, "'continue' with no open topic still creates topic 1")
         a.turn(tok(10), tok(5))
         self.eq((a.mgr.open_topic_id, a.mgr.topics.get(1).is_open), (2, False), "'return' without a topic_id is treated as a new topic")
+        # Design note: returning to the currently-open topic is intentionally handled as
+        # _close_current_topic() + reopen(), not as 'continue'. The segmenter decided a
+        # topic transition occurred, so a new page boundary is the correct response even
+        # when the destination happens to be the same topic that is already open.
         b = self.mk(seg={1: "new", 2: ("return", 1)}, label="return to the topic that is already open")
         b.turn(tok(10, "alpha"), tok(5))
         b.turn(tok(10, "alpha"), tok(5))
         self.eq((b.mgr.topics.get(1).is_open, b.mgr.topics.get(1).page_seqs), (True, [0, 1]), "returning to the open topic closes and reopens it with a fresh page")
+        # A return to a non-existent topic id must raise KeyError (the pre-flight
+        # self.topics.get() in prepare_context fires before _apply_segmentation, so
+        # no topic is closed and no page is opened — state is fully preserved).
         c = self.mk(seg={1: "new", 2: ("return", 99)}, label="return to a topic id that does not exist")
         c.turn(tok(10, "alpha"), tok(5))
         before = structure(snap(c.mgr))
         err = c.try_turn(tok(10, "beta"), tok(5))
-        self.check(err is not None or c.mgr.open_topic_id is not None, f"an unknown topic id is either rejected or handled (got {type(err).__name__ if err else 'no error'})")
-        if err is not None:
-            self.check(structure(snap(c.mgr)) == before, "after rejecting the unknown topic id the state is unchanged (nothing half-applied)")
+        self.check(isinstance(err, KeyError), f"an unknown topic id raises KeyError (got {type(err).__name__ if err else 'no error'})")
+        self.check(structure(snap(c.mgr)) == before, "after the KeyError the state is fully unchanged (no half-applied topic close or page open)")
 
 
 # ══════════════════════════════════════════════════════════════════ R: routing
@@ -683,7 +689,7 @@ class TestRouting(PrismCase):
         h = self.mk(seg={1: "new", 2: "new"}, rt={2: {1: 0.3}})
         h.turn(tok(10), tok(5))
         h.turn(tok(10), tok(5))
-        scores = h.mgr._last_scores          # internal, but this is the only place the value is observable
+        scores = h.mgr.last_scores
         self.eq(scores.get(2), 1.0, "open topic 2 has score 1.0")
         self.eq(scores.get(1), 0.3, "closed topic 1 keeps the router's score")
 
@@ -1052,11 +1058,21 @@ class TestEndToEnd(PrismCase):
             ("What is the GDP of India and its growth rate", "About 3.7 trillion dollars."),
         ]
         prompts = [h.turn(u, r) for u, r in script]
-        self.eq(len(h.mgr.topics.all()), 4, "four subjects became four topics (Goa, quantum, Docker, GDP); the returns reused old topics")
-        self.check("Anjuna has trance parties. Baga offers parasailing." in contents(prompts[3]), "turn 4 (back to Goa): the old Goa answer is in the prompt again")
-        self.check("Docker packages apps. Kubernetes schedules containers." in contents(prompts[4]), "turn 5 (back to Docker): the old Docker answer is in the prompt again")
+
+        # --- Structural checks (manager-level; independent of keyword decisions) ---
         self.check(max(x["after"]["used"] for x in [h.last]) <= 130, "L1 never exceeded its maximum")
-        self.note("If the two 'old answer is in the prompt' checks fail, look at that turn's topic table: the keyword fakes may have mis-segmented, which points at the fakes rather than the manager.")
+
+        # --- Heuristic-dependent checks (keyword-decider-level) ---
+        # These rely on KeywordSegmenter correctly detecting topic transitions.
+        # A failure here means either: (a) the manager has a bug, OR
+        # (b) the keyword thresholds mis-segmented the script — check the topic table
+        # in the report to distinguish. The fuzz test E2 isolates (a) from (b).
+        self.eq(len(h.mgr.topics.all()), 4,
+                "[heuristic] four subjects became four topics (Goa, quantum, Docker, GDP); the returns reused old topics")
+        self.check("Anjuna has trance parties. Baga offers parasailing." in contents(prompts[3]),
+                   "[heuristic] turn 4 (back to Goa): the old Goa answer is in the prompt again")
+        self.check("Docker packages apps. Kubernetes schedules containers." in contents(prompts[4]),
+                   "[heuristic] turn 5 (back to Docker): the old Docker answer is in the prompt again")
 
     def test_E2_random_conversations_never_break_the_invariants(self):
         """Fuzz: random topics, returns, scores and message sizes over 8 seeds x 120 turns. Invariants must hold after every step."""
